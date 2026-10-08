@@ -633,6 +633,16 @@ namespace components
 				"2.4.0",
 				true
 			};
+
+			variable devgui_hotkey =
+			{
+				"devgui_hotkey",
+				("Windows virtual-key code (decimal) of the key that toggles the devgui. Default is F5 (116). Set to 0 to disable the hotkey.\n"
+				 "# The devgui can always be toggled via the 'xo_devgui_toggle' console command.\n"
+				 "# Key codes: https://learn.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes"),
+				"2.5.0",
+				VK_F5
+			};
 		};
 
 		static inline var_definitions vars = {};

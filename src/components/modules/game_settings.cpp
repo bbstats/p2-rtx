@@ -155,6 +155,7 @@ namespace components
 				ASSIGN(vgui_progress_board_emissive_offset);
 				ASSIGN(bik_emissive_intensity);
 				ASSIGN(enable_dual_layered_water);
+				ASSIGN(devgui_hotkey);
 
 			#undef ASSIGN
 			}

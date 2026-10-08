@@ -24,7 +24,12 @@ namespace components
 		void devgui();
 		bool input_message(UINT message_type, WPARAM wparam, LPARAM lparam);
 
+		// window message used to toggle the devgui without going through the (user configurable) hotkey
+		static constexpr UINT WM_DEVGUI_TOGGLE = WM_APP + 0x50;
+		static void toggle_devgui();
+
 		bool m_menu_active = false;
+		bool m_devgui_hotkey_rebind_active = false;
 		bool m_initialized_device = false;
 
 		void style_xo();

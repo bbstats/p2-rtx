@@ -43,6 +43,13 @@ namespace components
 	
 	LRESULT __stdcall wnd_proc_hk(HWND window, UINT message_type, WPARAM wparam, LPARAM lparam)
 	{
+		// our own message - never pass it to the game
+		if (message_type == imgui::WM_DEVGUI_TOGGLE)
+		{
+			imgui::get()->input_message(message_type, wparam, lparam);
+			return 0;
+		}
+
 		bool pass_msg_to_game = false;
 
 		//common::log("ImGui", utils::va("MSG 0x%x -- w: 0x%x -- l: 0x%x\n", message_type, wparam, lparam));
@@ -112,14 +119,36 @@ namespace components
 		}
 	}
 
+	void imgui::toggle_devgui()
+	{
+		PostMessage(glob::main_window, WM_DEVGUI_TOGGLE, 0, 0);
+	}
+
 	bool imgui::input_message(const UINT message_type, const WPARAM wparam, const LPARAM lparam)
 	{
-		if (message_type == WM_KEYUP && wparam == VK_F5) 
+		// capture the next released key as the new devgui hotkey (ESC cancels)
+		if (m_devgui_hotkey_rebind_active && m_menu_active && message_type == WM_KEYUP)
+		{
+			m_devgui_hotkey_rebind_active = false;
+			if (wparam != VK_ESCAPE)
+			{
+				auto& var = game_settings::get()->devgui_hotkey;
+				*var.get_as<int*>() = static_cast<int>(wparam);
+				var.set_dirty(false);
+			}
+			return true;
+		}
+
+		const int hotkey = game_settings::get()->devgui_hotkey.get_as<int>();
+		const bool is_hotkey = message_type == WM_KEYUP && hotkey > 0 && wparam == static_cast<WPARAM>(hotkey);
+
+		if (is_hotkey || message_type == WM_DEVGUI_TOGGLE)
 		{
 			const auto& io = ImGui::GetIO();
 			if (!io.MouseDown[1])
 			{
 				m_menu_active = !m_menu_active;
+				m_devgui_hotkey_rebind_active = false;
 
 				// reset cursor to center when closing the menu to not affect player angles
 				if (interfaces::get()->m_surface->is_cursor_visible() && !m_menu_active)
@@ -3685,6 +3714,57 @@ namespace components
 		}
 	}
 
+	std::string get_key_name(const int vk)
+	{
+		if (vk <= 0) {
+			return "Disabled";
+		}
+
+		char name[64] = {};
+		if (const auto scan_code = MapVirtualKeyA(static_cast<UINT>(vk), MAPVK_VK_TO_VSC);
+			scan_code && GetKeyNameTextA(static_cast<LONG>(scan_code << 16), name, sizeof(name)) > 0)
+		{
+			return name;
+		}
+
+		return std::format("Key 0x{:X}", vk);
+	}
+
+	void cont_gamesettings_input()
+	{
+		const auto im = imgui::get();
+		auto& var = game_settings::get()->devgui_hotkey;
+
+		const bool colorize = var.get_dirty_state();
+		if (colorize) {
+			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.4f, 0.15f, 1.0f));
+		}
+
+		const auto label = im->m_devgui_hotkey_rebind_active
+			? "Press any key ... (ESC to cancel)###DevguiHotkey"s
+			: "Devgui Hotkey: " + get_key_name(var.get_as<int>()) + "###DevguiHotkey";
+
+		if (ImGui::Button(label.c_str(), ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, 0))) {
+			im->m_devgui_hotkey_rebind_active = true;
+		}
+
+		TT(var.get_tooltip_string().c_str());
+		gamesettings_var_reset_logic(var);
+
+		ImGui::SameLine();
+		if (ImGui::Button("Disable Hotkey", ImVec2(ImGui::GetContentRegionAvail().x, 0)))
+		{
+			*var.get_as<int*>() = 0;
+			var.set_dirty(false);
+			im->m_devgui_hotkey_rebind_active = false;
+		}
+		TT("Disables the devgui hotkey. Use the 'xo_devgui_toggle' console command to open the devgui.\nUse 'Save Current Settings' to make changes persistent.");
+
+		if (colorize) {
+			ImGui::PopStyleColor();
+		}
+	}
+
 	void cont_gamesettings_renderer_settings()
 	{
 		const auto gs = game_settings::get();
@@ -3744,6 +3824,13 @@ namespace components
 			static float cont_quickcmd_height = 0.0f;
 			cont_quickcmd_height = ImGui::Widget_ContainerWithCollapsingTitle("Quick Commands", cont_quickcmd_height, cont_gamesettings_quick_cmd,
 				true, ICON_FA_TERMINAL, &ImGuiCol_ContainerBackground, &ImGuiCol_ContainerBorder);
+		}
+
+		// input
+		{
+			static float cont_input_height = 0.0f;
+			cont_input_height = ImGui::Widget_ContainerWithCollapsingTitle("Input", cont_input_height, cont_gamesettings_input,
+				true, ICON_FA_KEYBOARD, &ImGuiCol_ContainerBackground, &ImGuiCol_ContainerBorder);
 		}
 
 		// renderer related settings
@@ -3946,7 +4033,7 @@ namespace components
 		if (old_active_state != m_menu_active && !m_menu_active) 
 		{ 
 			m_menu_active = true; // we have to re-set this back to true. We would instantly reopen the gui otherwise
-			SendMessage(glob::main_window, WM_KEYUP, VK_F5, 0);
+			SendMessage(glob::main_window, WM_DEVGUI_TOGGLE, 0, 0);
 		}
 
 		m_im_window_focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_AnyWindow);
@@ -4229,6 +4316,8 @@ namespace components
 		}
 	}
 
+	ConCommand xo_devgui_toggle{};
+
 	imgui::imgui()
 	{
 		p_this = this;
@@ -4254,6 +4343,9 @@ namespace components
 		const auto dev = game::get_d3d_device();
 		MH_CreateHook(reinterpret_cast<void*>(get_virtual(dev, 17)), present_hk, reinterpret_cast<void**>(&present_original));
 		MH_CreateHook(reinterpret_cast<void*>(get_virtual(dev, 16)), reset_hk, reinterpret_cast<void**>(&reset_original));
+
+		// -----
+		game::con_add_command(&xo_devgui_toggle, "xo_devgui_toggle", toggle_devgui, "Toggles the compatibility mod devgui");
 
 		// -----
 		m_initialized = true;
