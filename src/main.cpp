@@ -2,6 +2,7 @@
 #include <Psapi.h>
 #include <wincrypt.h>
 #include "components/common/flags.hpp"
+#include "components/common/crash_handler.hpp"
 
 std::unordered_set<HWND> wnd_class_list;
 
@@ -187,6 +188,7 @@ BOOL APIENTRY DllMain(HMODULE hmodule, const DWORD ul_reason_for_call, LPVOID)
 		globals::setup_dll_module(hmodule);
 		globals::setup_exe_module();
 		globals::setup_homepath();
+		common::crash_handler::install();
 
 		common::set_console_color_blue(true);
 		common::console_out << "\n  Launching Portal 2 RTX Remix Compatiblity Mod Version [" << COMP_MOD_VERSION_MAJOR << "." << COMP_MOD_VERSION_MINOR << "." << COMP_MOD_VERSION_PATCH << "]";

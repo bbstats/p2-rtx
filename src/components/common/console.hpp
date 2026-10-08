@@ -181,6 +181,10 @@ namespace common
 	{
 		std::call_once(log_file_init_flag, []()
 			{
+				// the logs folder is not part of the release - create it or the log file silently fails to open
+				std::error_code ec;
+				std::filesystem::create_directories(globals::root_path + COMPMOD_ASSET_DIR "logs", ec);
+
 				const std::string file_path = globals::root_path + COMPMOD_ASSET_DIR "logs\\logfile.txt";
 				log_file.open(file_path, std::ios::out | std::ios::trunc);
 			});
