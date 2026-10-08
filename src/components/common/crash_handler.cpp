@@ -117,11 +117,11 @@ namespace common::crash_handler
 				const char* name = strrchr(path, '\\');
 				name = name ? name + 1 : path;
 
-				snprintf(out, out_size, "%s+0x%X", name, address - reinterpret_cast<DWORD>(mod));
+				snprintf(out, out_size, "%s+0x%X", name, static_cast<unsigned>(address - reinterpret_cast<DWORD>(mod)));
 				return;
 			}
 
-			snprintf(out, out_size, "0x%08X (unknown module)", address);
+			snprintf(out, out_size, "0x%08X (unknown module)", static_cast<unsigned>(address));
 		}
 
 		void get_current_map_name(char* out, const size_t out_size)
