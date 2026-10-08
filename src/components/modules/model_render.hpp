@@ -299,8 +299,10 @@ namespace components
 		}
 
 		// save vertex shader
+		// > Get* calls add a reference - released in restore_vs / reset_context or when saving again
 		void save_vs(IDirect3DDevice9* device)
 		{
+			release_ref(vs_);
 			device->GetVertexShader(&vs_);
 			vs_set = true;
 		}
@@ -316,6 +318,7 @@ namespace components
 				}
 #endif
 
+				release_ref(tex0_);
 				device->GetTexture(0, &tex0_);
 				tex0_set = true;
 			}
@@ -327,6 +330,7 @@ namespace components
 				}
 #endif
 
+				release_ref(tex1_);
 				device->GetTexture(1, &tex1_);
 				tex1_set = true;
 			}
@@ -401,6 +405,7 @@ namespace components
 			if (vs_set)
 			{
 				device->SetVertexShader(vs_);
+				release_ref(vs_);
 				vs_set = false;
 			}
 		}
@@ -413,6 +418,7 @@ namespace components
 				if (tex0_set)
 				{
 					device->SetTexture(0, tex0_);
+					release_ref(tex0_);
 					tex0_set = false;
 				}
 			}
@@ -421,6 +427,7 @@ namespace components
 				if (tex1_set)
 				{
 					device->SetTexture(1, tex1_);
+					release_ref(tex1_);
 					tex1_set = false;
 				}
 			}
@@ -503,9 +510,9 @@ namespace components
 		// reset the stored context data
 		void reset_context()
 		{
-			vs_ = nullptr; vs_set = false;
-			tex0_ = nullptr; tex0_set = false;
-			tex1_ = nullptr; tex1_set = false;
+			release_ref(vs_); vs_set = false;
+			release_ref(tex0_); tex0_set = false;
+			release_ref(tex1_); tex1_set = false;
 			tex0_transform_set = false;
 			view_transform_set_ = false;
 			projection_transform_set_ = false;
@@ -595,6 +602,17 @@ namespace components
 		prim_fvf_context() = default;
 
 	private:
+		// releases a reference obtained by a device Get* call
+		template <typename T>
+		static void release_ref(T*& ptr)
+		{
+			if (ptr)
+			{
+				ptr->Release();
+				ptr = nullptr;
+			}
+		}
+
 		// Render states to save
 		IDirect3DVertexShader9* vs_ = nullptr;
 		IDirect3DBaseTexture9* tex0_ = nullptr;

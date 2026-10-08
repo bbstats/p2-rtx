@@ -325,6 +325,7 @@ namespace components
 
 		d3dvertelem decl[MAX_FVF_DECL_SIZE]; UINT numElements = 0;
 		vertex_decl->GetDeclaration((D3DVERTEXELEMENT9*)decl, &numElements);
+		vertex_decl->Release(); // GetVertexDeclaration adds a reference
 		int break_me = 1; // look into decl
 
 #if 0
@@ -478,6 +479,11 @@ namespace components
 		// restore
 		dev->SetVertexShader(og_vs);
 		dev->SetTexture(0, og_tex);
+
+		// Get* calls add a reference
+		if (og_vs) og_vs->Release();
+		if (og_tex) og_tex->Release();
+
 		dev->SetRenderState((D3DRENDERSTATETYPE)150, og_rs);
 		dev->SetRenderState(D3DRS_ALPHABLENDENABLE, og_blend);
 		dev->SetFVF(NULL);
@@ -495,6 +501,12 @@ namespace components
 		}*/
 
 		const auto dev = game::get_d3d_device();
+
+		// GetVertexShader adds a reference - drop the one from a previous, unrestored call
+		if (ff_model::s_shader) {
+			ff_model::s_shader->Release();
+		}
+
 		dev->GetVertexShader(&ff_model::s_shader);
 		dev->SetTransform(D3DTS_WORLD, &game::IDENTITY);
 
@@ -596,6 +608,7 @@ namespace components
 		if (ff_model::s_shader)
 		{
 			dev->SetVertexShader(ff_model::s_shader);
+			ff_model::s_shader->Release();
 			ff_model::s_shader = nullptr;
 		}
 
@@ -697,8 +710,23 @@ namespace components
 			if (is_rendering_bmodel_paint)
 			//if (primlist)
 			{
+				struct src_vert
+				{
+					Vector pos;				 // 12
+					Vector normal;			 // 12	> 24
+					Vector2D tc_base;		 // 8	> 32
+					Vector2D tc_lmap;		 // 8	> 40
+					Vector2D tc_lmap_offset; // 8	> 48
+					Vector2D tc3;			 // 8	> 56 // @48 actually float3 tangent
+					Vector2D tc4;			 // 8	> 64 // @60 actually float3 binormal
+					Vector2D tc5;			 // 8	> 72 
+					Vector2D tc6;			 // 8	> 80 // last 8 byte junk?
+				};
+
 				IDirect3DIndexBuffer9* ib = nullptr;
-				if (SUCCEEDED(dev->GetIndices(&ib)))
+
+				// writing into a vertex with a smaller stride would corrupt the position of the following vertex
+				if (t_stride >= sizeof(src_vert) && SUCCEEDED(dev->GetIndices(&ib)) && ib)
 				{
 					void* ib_data; // lock index buffer to retrieve the relevant vertex indices
 					if (SUCCEEDED(ib->Lock(0, 0, &ib_data, D3DLOCK_READONLY)))
@@ -714,28 +742,38 @@ namespace components
 
 						// get the range of vertices that we are going to work with
 						UINT min_vert = 0u, max_vert = 0u;
+						if (!indices.empty())
 						{
 							auto [min_it, max_it] = std::minmax_element(indices.begin(), indices.end());
 							min_vert = *min_it;
 							max_vert = *max_it;
 						}
 
-						// lock vertex buffer from first used vertex (in total bytes) to X used vertices (in total bytes)
-						if (SUCCEEDED(vb->Lock(min_vert * t_stride, max_vert * t_stride, &src_buffer_data, 0)))
-						{
-							struct src_vert
-							{
-								Vector pos;				 // 12
-								Vector normal;			 // 12	> 24
-								Vector2D tc_base;		 // 8	> 32
-								Vector2D tc_lmap;		 // 8	> 40
-								Vector2D tc_lmap_offset; // 8	> 48
-								Vector2D tc3;			 // 8	> 56 // @48 actually float3 tangent
-								Vector2D tc4;			 // 8	> 64 // @60 actually float3 binormal
-								Vector2D tc5;			 // 8	> 72 
-								Vector2D tc6;			 // 8	> 80 // last 8 byte junk?
-							};
+						// lock vertex buffer from first used vertex to last used vertex (in total bytes)
+						// > vertex positions are relative to the stream offset
+						const UINT lock_offset = t_offset + min_vert * t_stride;
+						const UINT lock_size = (max_vert - min_vert + 1u) * t_stride;
 
+						// only lock for writing if there are unmodified vertices left:
+						// the bridge sends the entire locked range to the server on every non-readonly unlock
+						bool needs_update = false;
+						if (!indices.empty() && SUCCEEDED(vb->Lock(lock_offset, lock_size, &src_buffer_data, D3DLOCK_READONLY)))
+						{
+							for (const auto i : indices)
+							{
+								const auto src = reinterpret_cast<src_vert*>(((DWORD)src_buffer_data + (i - min_vert) * t_stride));
+								if (src->tc6.x != 1.337f)
+								{
+									needs_update = true;
+									break;
+								}
+							}
+
+							vb->Unlock();
+						}
+
+						if (needs_update && SUCCEEDED(vb->Lock(lock_offset, lock_size, &src_buffer_data, 0)))
+						{
 							for (auto i : indices)
 							{
 								// we need to subtract min_vert because we locked @ min_vert which is the start of our lock
@@ -758,6 +796,10 @@ namespace components
 							vb->Unlock();
 						}
 					}
+				}
+
+				if (ib) {
+					ib->Release(); // GetIndices adds a reference
 				}
 			}
 
@@ -783,6 +825,8 @@ namespace components
 			// this requires dxvk-remix modifications (https://github.com/NVIDIAGameWorks/dxvk-remix/pull/79)
 			model_render::set_remix_texture_categories(dev, InstanceCategories::IgnoreOpacityMicromap | InstanceCategories::DecalStatic);
 			model_render::set_remix_texture_hash(dev, 0x1337);
+
+			vb->Release(); // GetStreamSource adds a reference
 		}
 	}
 
@@ -1589,12 +1633,6 @@ namespace components
 
 		const auto dev = game::get_d3d_device();
 
-		IDirect3DVertexBuffer9* b = nullptr;
-		UINT stride = 0;
-		{
-			UINT ofs = 0; dev->GetStreamSource(0, &b, &ofs, &stride);
-		}
-
 		auto& ctx = model_render::primctx;
 		const auto shaderapi = game::get_shaderapi();
 		const auto gs = game_settings::get();
@@ -2271,7 +2309,7 @@ namespace components
 								dev->GetStreamSource(0, &vb, &t_offset, &t_stride);
 
 								IDirect3DIndexBuffer9* ib = nullptr;
-								if (SUCCEEDED(dev->GetIndices(&ib)))
+								if (vb && SUCCEEDED(dev->GetIndices(&ib)) && ib)
 								{
 									WORD* ib_data; // lock index buffer to retrieve the relevant vertex indices
 									if (SUCCEEDED(ib->Lock(0, 0, (void**)&ib_data, D3DLOCK_READONLY)))
@@ -2287,14 +2325,15 @@ namespace components
 
 										// get the range of vertices that we are going to work with
 										UINT min_vert = 0u, max_vert = 0u;
+										if (!indices.empty())
 										{
 											auto [min_it, max_it] = std::minmax_element(indices.begin(), indices.end());
 											min_vert = *min_it;
 											max_vert = *max_it;
 										}
 
-										void* src_buffer_data; // lock vertex buffer from first used vertex (in total bytes) to X used vertices (in total bytes)
-										if (SUCCEEDED(vb->Lock(min_vert * t_stride, max_vert * t_stride, &src_buffer_data, 0)))
+										void* src_buffer_data; // lock vertex buffer from first used vertex to last used vertex (in total bytes)
+										if (!indices.empty() && SUCCEEDED(vb->Lock(t_offset + min_vert * t_stride, (max_vert - min_vert + 1u) * t_stride, &src_buffer_data, 0)))
 										{
 											struct src_vert {
 												Vector pos; Vector normal; Vector2D tc;
@@ -2318,6 +2357,10 @@ namespace components
 										}
 									}
 								}
+
+								// Get* calls add a reference
+								if (ib) ib->Release();
+								if (vb) vb->Release();
 							}
 						}
 					}
@@ -2461,7 +2504,7 @@ namespace components
 							dev->GetStreamSource(0, &vb, &t_offset, &t_stride);
 
 							IDirect3DIndexBuffer9* ib = nullptr;
-							if (SUCCEEDED(dev->GetIndices(&ib)))
+							if (SUCCEEDED(dev->GetIndices(&ib)) && ib)
 							{
 								void* ib_data; // retrieve a single vertex index (*2 because WORD)
 								if (SUCCEEDED(ib->Lock(primlist->m_FirstIndex * 2, 2, &ib_data, D3DLOCK_READONLY)))
@@ -2470,7 +2513,7 @@ namespace components
 									ib->Unlock();
 
 									void* src_buffer_data; // retrieve single indexed vertex
-									if (SUCCEEDED(vb->Lock(first_index * t_stride, t_stride, &src_buffer_data, D3DLOCK_READONLY)))
+									if (vb && SUCCEEDED(vb->Lock(t_offset + first_index * t_stride, t_stride, &src_buffer_data, D3DLOCK_READONLY)))
 									{
 										struct src_vert { Vector pos; Vector normal;  D3DCOLOR color; Vector2D tc0; };
 										const auto src = reinterpret_cast<src_vert*>(((DWORD)src_buffer_data));
@@ -2483,6 +2526,10 @@ namespace components
 									}
 								}
 							}
+
+							// Get* calls add a reference
+							if (ib) ib->Release();
+							if (vb) vb->Release();
 						}
 
 						ctx.save_vs(dev);
@@ -2534,7 +2581,7 @@ namespace components
 							dev->GetStreamSource(0, &vb, &t_offset, &t_stride);
 
 							IDirect3DIndexBuffer9* ib = nullptr;
-							if (SUCCEEDED(dev->GetIndices(&ib)))
+							if (SUCCEEDED(dev->GetIndices(&ib)) && ib)
 							{
 								void* ib_data; // retrieve a single vertex index (*2 because WORD)
 								if (SUCCEEDED(ib->Lock(primlist->m_FirstIndex * 2, 2, &ib_data, D3DLOCK_READONLY)))
@@ -2543,7 +2590,7 @@ namespace components
 									ib->Unlock();
 
 									void* src_buffer_data; // retrieve single indexed vertex
-									if (SUCCEEDED(vb->Lock(first_index * t_stride, t_stride, &src_buffer_data, D3DLOCK_READONLY)))
+									if (vb && SUCCEEDED(vb->Lock(t_offset + first_index * t_stride, t_stride, &src_buffer_data, D3DLOCK_READONLY)))
 									{
 										struct src_vert { Vector pos; Vector normal;  D3DCOLOR color; Vector2D tc0; };
 										const auto src = reinterpret_cast<src_vert*>(((DWORD)src_buffer_data));
@@ -2557,6 +2604,10 @@ namespace components
 									}
 								}
 							}
+
+							// Get* calls add a reference
+							if (ib) ib->Release();
+							if (vb) vb->Release();
 						}
 
 						ctx.save_vs(dev);
@@ -2750,7 +2801,7 @@ namespace components
 								dev->GetStreamSource(0, &vb, &t_offset, &t_stride);
 
 								IDirect3DIndexBuffer9* ib = nullptr;
-								if (SUCCEEDED(dev->GetIndices(&ib)))
+								if (SUCCEEDED(dev->GetIndices(&ib)) && ib)
 								{
 									void* ib_data; // retrieve a single vertex index (*2 because WORD)
 									if (SUCCEEDED(ib->Lock(primlist->m_FirstIndex * 2, 2, &ib_data, D3DLOCK_READONLY)))
@@ -2759,7 +2810,7 @@ namespace components
 										ib->Unlock();
 
 										void* src_buffer_data; // retrieve single indexed vertex
-										if (SUCCEEDED(vb->Lock(first_index * t_stride, t_stride, &src_buffer_data, D3DLOCK_READONLY)))
+										if (vb && SUCCEEDED(vb->Lock(t_offset + first_index * t_stride, t_stride, &src_buffer_data, D3DLOCK_READONLY)))
 										{
 											struct src_vert_x {
 												Vector vParms; D3DCOLOR vTint;
@@ -2776,6 +2827,10 @@ namespace components
 										}
 									}
 								}
+
+								// Get* calls add a reference
+								if (ib) ib->Release();
+								if (vb) vb->Release();
 							}
 
 							ctx.save_rs(dev, D3DRS_TEXTUREFACTOR);
@@ -3000,7 +3055,7 @@ namespace components
 						dev->GetStreamSource(0, &vb, &t_offset, &t_stride);
 
 						IDirect3DIndexBuffer9* ib = nullptr;
-						if (SUCCEEDED(dev->GetIndices(&ib)))
+						if (vb && SUCCEEDED(dev->GetIndices(&ib)) && ib)
 						{
 							void* ib_data; // lock index buffer to retrieve the relevant vertex indices
 							if (SUCCEEDED(ib->Lock(0, 0, &ib_data, D3DLOCK_READONLY)))
@@ -3016,6 +3071,7 @@ namespace components
 
 								// get the range of vertices that we are going to work with
 								UINT min_vert = 0u, max_vert = 0u;
+								if (!indices.empty())
 								{
 									auto [min_it, max_it] = std::minmax_element(indices.begin(), indices.end());
 									min_vert = *min_it;
@@ -3024,8 +3080,8 @@ namespace components
 
 								void* src_buffer_data;
 
-								// lock vertex buffer from first used vertex (in total bytes) to X used vertices (in total bytes)
-								if (SUCCEEDED(vb->Lock(min_vert * t_stride, max_vert * t_stride, &src_buffer_data, D3DLOCK_READONLY)))
+								// lock vertex buffer from first used vertex to last used vertex (in total bytes)
+								if (!indices.empty() && SUCCEEDED(vb->Lock(t_offset + min_vert * t_stride, (max_vert - min_vert + 1u) * t_stride, &src_buffer_data, D3DLOCK_READONLY)))
 								{
 									struct src_vert_y {
 										Vector pos;
@@ -3047,6 +3103,11 @@ namespace components
 								}
 							}
 						}
+
+						// Get* calls add a reference
+						if (ib) ib->Release();
+						if (vb) vb->Release();
+
 						remix_lights::bts3_set_flashlight_end_pos(flashlight_pos);
 					}
 				}
@@ -3569,6 +3630,7 @@ namespace components
 
 				// restore texture, renderstates and texturestates
 				dev->SetTexture(0, og_tex0);
+				if (og_tex0) og_tex0->Release(); // GetTexture adds a reference
 				dev->SetRenderState(D3DRS_ALPHABLENDENABLE, og_alphablend);
 				dev->SetRenderState(D3DRS_SRCBLEND, og_srcblend);
 				dev->SetRenderState(D3DRS_DESTBLEND, og_destblend);
@@ -3698,6 +3760,7 @@ namespace components
 
 			// restore texture
 			dev->SetTexture(0, og_tex0);
+			if (og_tex0) og_tex0->Release(); // GetTexture adds a reference
 		}
 
 		if (ff_worldmodel::s_shader)
@@ -3801,6 +3864,9 @@ namespace components
 	void __fastcall tbl_hk::bmodel_renderer::DrawBrushModelEx::Detour(void* ecx, void* o1, IClientEntity* baseentity, model_t* model, const Vector* origin, const QAngle* angles, DrawBrushModelMode_t mode)
 	{
 		const auto dev = game::get_d3d_device();
+		if (ff_bmodel::s_shader) {
+			ff_bmodel::s_shader->Release(); // GetVertexShader adds a reference
+		}
 		dev->GetVertexShader(&ff_bmodel::s_shader); 
 
 		if (auto ent = (C_BaseEntity*)baseentity; ent)
@@ -3829,6 +3895,7 @@ namespace components
 		if (ff_bmodel::s_shader)
 		{
 			dev->SetVertexShader(ff_bmodel::s_shader);
+			ff_bmodel::s_shader->Release();
 			ff_bmodel::s_shader = nullptr;
 		}
 	}
@@ -3836,6 +3903,9 @@ namespace components
 	void __fastcall tbl_hk::bmodel_renderer::DrawBrushModelArray::Detour(void* ecx, void* o1, void* matrendercontext, int count, const BrushArrayInstanceData_t* instance_data, int model_type_flags)
 	{
 		const auto dev = game::get_d3d_device();
+		if (ff_bmodel::s_shader) {
+			ff_bmodel::s_shader->Release(); // GetVertexShader adds a reference
+		}
 		dev->GetVertexShader(&ff_bmodel::s_shader);
 
 		tbl_hk::bmodel_renderer::table.original<FN>(Index)(ecx, o1, matrendercontext, count, instance_data, model_type_flags);
@@ -3846,6 +3916,7 @@ namespace components
 		if (ff_bmodel::s_shader)
 		{
 			dev->SetVertexShader(ff_bmodel::s_shader);
+			ff_bmodel::s_shader->Release();
 			ff_bmodel::s_shader = nullptr;
 		}
 	}
