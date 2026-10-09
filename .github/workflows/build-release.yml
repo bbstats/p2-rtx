@@ -50,6 +50,7 @@ jobs:
 
       - name: Move build files
         run: |
+          New-Item -ItemType Directory -Force -Path ./assets/bin/plugins | Out-Null
           move build/bin/${{matrix.configuration}}/*.dll ./assets/bin/plugins/
           move build/bin/${{matrix.configuration}}/*.asi ./assets/bin/plugins/
           move build/bin/${{matrix.configuration}}/*.pdb ./assets/bin/plugins/
@@ -58,11 +59,11 @@ jobs:
         shell: pwsh
         run: |
           Expand-Archive `
-            -Path assets/.trex/d3d9_runtime.zip `
-            -DestinationPath assets/.trex `
+            -Path assets/bin/.trex/d3d9_runtime.zip `
+            -DestinationPath assets/bin/.trex `
             -Force
           
-          Remove-Item assets/.trex/d3d9_runtime.zip
+          Remove-Item assets/bin/.trex/d3d9_runtime.zip
 
       - name: Upload ${{matrix.configuration}}-binaries-p2-rtx
         uses: actions/upload-artifact@v4
