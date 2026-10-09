@@ -50,7 +50,7 @@ If you want to support my work:
 - An external console window should spawn and let you know if there are any issues.
 
 > - Press `Alt + X` to open the Remix menu  
-> - Press `F5` to open the Compatibility Mod menu
+> - Press `F5` to open the Compatibility Mod menu (rebind or disable it in `Game Settings > Input`, or use the `xo_devgui_toggle` console command)
 
 ### Using DLSS 5
 - Open the Remix menu via `Alt + X` and open the Advanced Settings Menu
